@@ -1,160 +1,174 @@
-version: "3.9"
-
+version: '3.9'
 services:
   db:
-    image: mariadb:10.6
+    image: 'mariadb:10.6'
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL","mysqladmin ping -h localhost --password=$$MYSQL_ROOT_PASSWORD"]
+      test:
+        - CMD-SHELL
+        - 'mysqladmin ping -h localhost --password=$$MYSQL_ROOT_PASSWORD'
       interval: 1s
       retries: 20
     command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --skip-character-set-client-handshake
-      - --skip-innodb-read-only-compressed
+      - '--character-set-server=utf8mb4'
+      - '--collation-server=utf8mb4_unicode_ci'
+      - '--skip-character-set-client-handshake'
+      - '--skip-innodb-read-only-compressed'
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
-      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
+      MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD:?}'
+      MARIADB_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD:?}'
     volumes:
-      - db-data:/var/lib/mysql
-
+      - 'db-data:/var/lib/mysql'
   redis-cache:
-    image: redis:6.2-alpine
+    image: 'redis:6.2-alpine'
     restart: unless-stopped
-
   redis-queue:
-    image: redis:6.2-alpine
+    image: 'redis:6.2-alpine'
     restart: unless-stopped
     volumes:
-      - redis-queue-data:/data
-
+      - 'redis-queue-data:/data'
   backend:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
     environment:
       DB_HOST: db
-      DB_PORT: "3306"
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
-      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
-      PUBLIC_BACKEND_URL: ${SERVICE_URL_BACKEND_8000:-}
+      DB_PORT: '3306'
+      MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD:?}'
+      MARIADB_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD:?}'
+      PUBLIC_BACKEND_URL: '${SERVICE_URL_BACKEND_8000:-}'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   configurator:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
-    entrypoint: ["bash","-c"]
-    command: >
-      ls -1 apps > sites/apps.txt;
-      bench set-config -g db_host $$DB_HOST;
-      bench set-config -gp db_port $$DB_PORT;
-      bench set-config -g redis_cache "redis://$$REDIS_CACHE";
-      bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
-      bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
-      bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    entrypoint:
+      - bash
+      - '-c'
+    command: "ls -1 apps > sites/apps.txt; bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache \"redis://$$REDIS_CACHE\"; bench set-config -g redis_queue \"redis://$$REDIS_QUEUE\"; bench set-config -g redis_socketio \"redis://$$REDIS_QUEUE\"; bench set-config -gp socketio_port $$SOCKETIO_PORT;\n"
     environment:
       DB_HOST: db
-      DB_PORT: "3306"
-      REDIS_CACHE: redis-cache:6379
-      REDIS_QUEUE: redis-queue:6379
-      SOCKETIO_PORT: "9000"
+      DB_PORT: '3306'
+      REDIS_CACHE: 'redis-cache:6379'
+      REDIS_QUEUE: 'redis-queue:6379'
+      SOCKETIO_PORT: '9000'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   create-site:
     image: frappe/erpnext:v15.88.0
-    restart: unless-stopped
-    entrypoint: ["bash","-c"]
+    restart: "no"              # roda uma vez e para
+    entrypoint: ["bash","-lc"] # -l garante PATH / -c executa o script
     command: >
-      wait-for-it db:3306 -t 120;
-      wait-for-it redis-cache:6379 -t 120;
-      wait-for-it redis-queue:6379 -t 120;
-      export start=`date +%s`;
-      until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] &&
-            [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] &&
-            [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+      wait_for() {
+        local host="$1" port="$2" timeout="${3:-120}" start=$(date +%s);
+        echo "⏳ waiting for $host:$port (timeout ${timeout}s)";
+        while ! (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; do
+          sleep 1;
+          if (( $(date +%s) - start > timeout )); then
+            echo "❌ timeout waiting for $host:$port";
+            exit 1;
+          fi
+        done
+        echo "✅ $host:$port is up";
+      };
+      wait_for db 3306 120;
+      wait_for redis-cache 6379 120;
+      wait_for redis-queue 6379 120;
+
+      # aguarda o common_site_config com as chaves
+      start=$(date +%s);
+      until [[ -n "$(grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty")" ]] &&
+            [[ -n "$(grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty")" ]] &&
+            [[ -n "$(grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty")" ]];
       do
-        echo "Waiting for sites/common_site_config.json to be created";
+        echo "⏳ waiting for sites/common_site_config.json to be created";
         sleep 5;
-        if (( `date +%s`-start > 120 )); then
-          echo "could not find sites/common_site_config.json with required keys";
+        if (( $(date +%s) - start > 120 )); then
+          echo "❌ could not find sites/common_site_config.json with required keys";
           exit 1;
         fi
       done;
-      echo "sites/common_site_config.json found";
+
+      echo "✅ sites/common_site_config.json found";
+      echo "🏷️  creating site: ${SITE_NAME}";
       bench new-site --mariadb-user-host-login-scope='%' \
-        --admin-password=${ERP_ADMIN_PASSWORD:?} \
+        --admin-password="${ERP_ADMIN_PASSWORD:?}" \
         --db-root-username=root \
-        --db-root-password=${MYSQL_ROOT_PASSWORD:?} \
+        --db-root-password="${MYSQL_ROOT_PASSWORD:?}" \
         --install-app erpnext \
-        --set-default ${SITE_NAME};
+        --set-default "${SITE_NAME}";
     environment:
       ERP_ADMIN_PASSWORD: ${ERP_ADMIN_PASSWORD:?}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
-      # usa o FQDN publicado pelo Coolify para batizar o site
+      # usa o FQDN publicado pelo Coolify para batizar o site (obrigatório)
       SITE_NAME: ${SERVICE_FQDN_FRONTEND_8080:?}
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
 
   websocket:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
-    command: ["node","/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
     environment:
-      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
-      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
-      PUBLIC_WEBSOCKET_URL: ${SERVICE_URL_WEBSOCKET_9000:-}
+      FRAPPE_REDIS_CACHE: 'redis://redis-cache:6379'
+      FRAPPE_REDIS_QUEUE: 'redis://redis-queue:6379'
+      PUBLIC_WEBSOCKET_URL: '${SERVICE_URL_WEBSOCKET_9000:-}'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   queue-long:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
-    command: ["bench","worker","--queue","long,default,short"]
+    command:
+      - bench
+      - worker
+      - '--queue'
+      - 'long,default,short'
     environment:
-      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
-      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+      FRAPPE_REDIS_CACHE: 'redis://redis-cache:6379'
+      FRAPPE_REDIS_QUEUE: 'redis://redis-queue:6379'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   queue-short:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
-    command: ["bench","worker","--queue","short,default"]
+    command:
+      - bench
+      - worker
+      - '--queue'
+      - 'short,default'
     environment:
-      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
-      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+      FRAPPE_REDIS_CACHE: 'redis://redis-cache:6379'
+      FRAPPE_REDIS_QUEUE: 'redis://redis-queue:6379'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   frontend:
-    image: frappe/erpnext:v15.88.0
+    image: 'frappe/erpnext:v15.88.0'
     restart: unless-stopped
-    depends_on: [websocket]
-    command: ["nginx-entrypoint.sh"]
+    depends_on:
+      - websocket
+    command:
+      - nginx-entrypoint.sh
     environment:
-      BACKEND: backend:8000
-      SOCKETIO: websocket:9000
-      # sem FRAPPE_SITE_NAME_HEADER -> usa $host, combinando com o SITE_NAME criado acima
+      BACKEND: 'backend:8000'
+      SOCKETIO: 'websocket:9000'
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
-      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      UPSTREAM_REAL_IP_RECURSIVE: 'off'
       PROXY_READ_TIMEOUT: 120
       CLIENT_MAX_BODY_SIZE: 50m
-      PUBLIC_FRONTEND_URL: ${SERVICE_URL_FRONTEND_8080:-}
-      PUBLIC_FRONTEND_FQDN: ${SERVICE_FQDN_FRONTEND_8080:-}
+      PUBLIC_FRONTEND_URL: '${SERVICE_URL_FRONTEND_8080:-}'
+      PUBLIC_FRONTEND_FQDN: '${SERVICE_FQDN_FRONTEND_8080:-}'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
-
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
 volumes:
-  sites:
-  logs:
-  db-data:
-  redis-queue-data:
+  sites: null
+  logs: null
+  db-data: null
+  redis-queue-data: null
