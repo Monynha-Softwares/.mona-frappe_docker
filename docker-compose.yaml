@@ -1,7 +1,7 @@
 version: '3.8'
 services:
   backend:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     volumes:
       - 'sites:/home/frappe/frappe-bench/sites'
       - 'logs:/home/frappe/frappe-bench/logs'
@@ -13,7 +13,7 @@ services:
       FRAPPE_REDIS_CACHE: 'redis://redis-cache:6379'
       FRAPPE_REDIS_QUEUE: 'redis://redis-queue:6379'
   configurator:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     entrypoint:
       - bash
       - '-c'
@@ -28,39 +28,18 @@ services:
       - 'sites:/home/frappe/frappe-bench/sites'
       - 'logs:/home/frappe/frappe-bench/logs'
   create-site:
-    image: frappe/erpnext:${FRAPPE_TAG:-v15.88.0}
-    entrypoint: [ "bash", "-c" ]
-    command: >
-      wait-for-it --host=db --port=3306 --timeout=120 -- echo "db up";
-      wait-for-it --host=redis-cache --port=6379 --timeout=120 -- echo "redis-cache up";
-      wait-for-it --host=redis-queue --port=6379 --timeout=120 -- echo "redis-queue up";
-      export start=`date +%s`;
-      until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] &&
-            [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] &&
-            [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
-      do
-        echo "Waiting for sites/common_site_config.json to be created";
-        sleep 5;
-        if (( `date +%s`-start > 120 )); then
-          echo "could not find sites/common_site_config.json with required keys";
-          exit 1;
-        fi
-      done;
-      echo "sites/common_site_config.json found";
-      bench new-site
-        --mariadb-user-host-login-scope='%'
-        --admin-password=$$ADMIN_PASSWORD
-        --db-root-username=root
-        --db-root-password=$$DB_ROOT_PASSWORD
-        --install-app erpnext
-        --set-default $$PRIMARY_SITE;
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
+    entrypoint:
+      - bash
+      - '-c'
+    command: "wait-for-it -t 120 db:3306; wait-for-it -t 120 redis-cache:6379; wait-for-it -t 120 redis-queue:6379; export start=`date +%s`; until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r \".db_host // empty\"` ]] &&\n      [[ -n `grep -hs ^ sites/common_site_config.json | jq -r \".redis_cache // empty\"` ]] &&\n      [[ -n `grep -hs ^ sites/common_site_config.json | jq -r \".redis_queue // empty\"` ]];\ndo\n  echo \"Waiting for sites/common_site_config.json to be created\";\n  sleep 5;\n  if (( `date +%s`-start > 120 )); then\n    echo \"could not find sites/common_site_config.json with required keys\";\n    exit 1;\n  fi\ndone; echo \"sites/common_site_config.json found\"; bench new-site\n  --mariadb-user-host-login-scope='%'\n  --admin-password=$$ADMIN_PASSWORD\n  --db-root-username=root\n  --db-root-password=$$DB_ROOT_PASSWORD\n  --install-app erpnext\n  --set-default $$PRIMARY_SITE;\n"
     environment:
-      PRIMARY_SITE: ${PRIMARY_SITE:-erp.boteco.pt}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      PRIMARY_SITE: '${PRIMARY_SITE:-erp.boteco.pt}'
+      ADMIN_PASSWORD: '${ADMIN_PASSWORD}'
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD}'
     volumes:
-      - sites:/home/frappe/frappe-bench/sites
-      - logs:/home/frappe/frappe-bench/logs
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
   db:
     image: 'mariadb:${MARIADB_TAG:-10.6}'
     command:
@@ -84,7 +63,7 @@ services:
     volumes:
       - 'db-data:/var/lib/mysql'
   frontend:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     depends_on:
       - websocket
     command:
@@ -102,7 +81,7 @@ services:
       - 'sites:/home/frappe/frappe-bench/sites'
       - 'logs:/home/frappe/frappe-bench/logs'
   queue-long:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     command:
       - bench
       - worker
@@ -115,7 +94,7 @@ services:
       - 'sites:/home/frappe/frappe-bench/sites'
       - 'logs:/home/frappe/frappe-bench/logs'
   queue-short:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     command:
       - bench
       - worker
@@ -134,7 +113,7 @@ services:
   redis-cache:
     image: 'redis:${REDIS_TAG:-6.2-alpine}'
   scheduler:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     command:
       - bench
       - schedule
@@ -142,7 +121,7 @@ services:
       - 'sites:/home/frappe/frappe-bench/sites'
       - 'logs:/home/frappe/frappe-bench/logs'
   websocket:
-    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.0}'
+    image: 'frappe/erpnext:${FRAPPE_TAG:-v15.88.1}'
     command:
       - node
       - /home/frappe/frappe-bench/apps/frappe/socketio.js
