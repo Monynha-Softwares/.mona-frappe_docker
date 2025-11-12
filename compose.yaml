@@ -1,29 +1,19 @@
-x-customizable-image: &customizable_image
-  # By default the image used only contains the `frappe` and `erpnext` apps.
-  # See https://github.com/frappe/frappe_docker/blob/main/docs/container-setup/02-build-setup.md
-  # about using custom images.
-  image: ${CUSTOM_IMAGE:-frappe/erpnext}:${CUSTOM_TAG:-$ERPNEXT_VERSION}
-  pull_policy: ${PULL_POLICY:-always}
-  restart: ${RESTART_POLICY:-unless-stopped}
+x-customizable-image: &custom-image
+  image: "${CUSTOM_IMAGE:-frappe/erpnext}:${CUSTOM_TAG:-${ERPNEXT_VERSION:-v15.88.0}}"
+  pull_policy: "${PULL_POLICY:-always}"
+  restart: "${RESTART_POLICY:-unless-stopped}"
 
-x-depends-on-configurator: &depends_on_configurator
-  depends_on:
-    configurator:
-      condition: service_completed_successfully
-
-x-backend-defaults: &backend_defaults
-  <<: [*depends_on_configurator, *customizable_image]
-  volumes:
-    - sites:/home/frappe/frappe-bench/sites
+x-sites-volume: &sites-volume
+  - "sites:/home/frappe/frappe-bench/sites"
 
 services:
+  # 1) Configura chaves no common_site_config.json
   configurator:
-    <<: *backend_defaults
+    <<: *custom-image
+    depends_on: {}
     platform: linux/amd64
-    entrypoint:
-      - bash
-      - -c
-    # add redis_socketio for backward compatibility
+    volumes: *sites-volume
+    entrypoint: [ "bash", "-c" ]
     command:
       - >
         ls -1 apps > sites/apps.txt;
@@ -34,62 +24,168 @@ services:
         bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
         bench set-config -gp socketio_port $$SOCKETIO_PORT;
     environment:
-      DB_HOST: ${DB_HOST:-}
-      DB_PORT: ${DB_PORT:-}
-      REDIS_CACHE: ${REDIS_CACHE:-}
-      REDIS_QUEUE: ${REDIS_QUEUE:-}
-      SOCKETIO_PORT: 9000
-    depends_on: {}
-    restart: on-failure
+      # Interno entre containers: mantenha DNS docker (db / redis-*).
+      DB_HOST: "${DB_HOST:-db}"
+      DB_PORT: "${DB_PORT:-3306}"
+      REDIS_CACHE: "${REDIS_CACHE:-redis-cache:6379}"
+      REDIS_QUEUE: "${REDIS_QUEUE:-redis-queue:6379}"
+      SOCKETIO_PORT: "${SOCKETIO_PORT:-9000}"
 
+  # 2) Backend (gunicorn:8000)
   backend:
-    <<: *backend_defaults
+    <<: *custom-image
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
     platform: linux/amd64
-
-  frontend:
-    <<: *customizable_image
-    platform: linux/amd64
-    command:
-      - nginx-entrypoint.sh
+    volumes: *sites-volume
     environment:
-      BACKEND: backend:8000
-      SOCKETIO: websocket:9000
-      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER:-$$host}
-      UPSTREAM_REAL_IP_ADDRESS: ${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}
-      UPSTREAM_REAL_IP_HEADER: ${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
-      UPSTREAM_REAL_IP_RECURSIVE: ${UPSTREAM_REAL_IP_RECURSIVE:-off}
-      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
-      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
-    volumes:
-      - sites:/home/frappe/frappe-bench/sites
+      # Senhas geradas por Coolify (persistentes e reusáveis)
+      DB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"          # required
+      MYSQL_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"       # required
+      MARIADB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"     # required
+      # Redis (interno)
+      FRAPPE_REDIS_CACHE: "${FRAPPE_REDIS_CACHE:-redis://redis-cache:6379}"
+      FRAPPE_REDIS_QUEUE: "${FRAPPE_REDIS_QUEUE:-redis://redis-queue:6379}"
+
+  # 3) Frontend (nginx)
+  frontend:
+    <<: *custom-image
+    platform: linux/amd64
+    command: [ "nginx-entrypoint.sh" ]
     depends_on:
       - backend
       - websocket
+    volumes: *sites-volume
+    environment:
+      # Use a URL gerada pelo Coolify PARA PRODUÇÃO (com domínio atribuído),
+      # e caia para host:port interno no desenvolvimento/stack privado.
+      # IMPORTANTE: Identificadores com hífen habilitam uso de portas (doc). :contentReference[oaicite:2]{index=2}
+      BACKEND: "${SERVICE_URL_BACKEND_8000:-backend:8000}"
+      SOCKETIO: "${SERVICE_URL_WEBSOCKET_9000:-websocket:9000}"
 
+      FRAPPE_SITE_NAME_HEADER: "${FRAPPE_SITE_NAME_HEADER:-$${host}}"
+      UPSTREAM_REAL_IP_ADDRESS: "${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}"
+      UPSTREAM_REAL_IP_HEADER: "${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}"
+      UPSTREAM_REAL_IP_RECURSIVE: "${UPSTREAM_REAL_IP_RECURSIVE:-off}"
+      PROXY_READ_TIMEOUT: "${PROXY_READ_TIMEOUT:-120}"
+      CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-50m}"
+
+      # Exemplos de FQDN se precisar em templates/telemetria:
+      # DOMAIN_BACKEND: "${SERVICE_FQDN_BACKEND}"
+      # DOMAIN_FRONTEND: "${SERVICE_FQDN_FRONTEND}"
+
+  # 4) Websocket (socketio:9000)
   websocket:
-    <<: [*depends_on_configurator, *customizable_image]
+    <<: *custom-image
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
     platform: linux/amd64
-    command:
-      - node
-      - /home/frappe/frappe-bench/apps/frappe/socketio.js
-    volumes:
-      - sites:/home/frappe/frappe-bench/sites
+    command: [ "node", "/home/frappe/frappe-bench/apps/frappe/socketio.js" ]
+    volumes: *sites-volume
+    environment:
+      FRAPPE_REDIS_CACHE: "${FRAPPE_REDIS_CACHE:-redis://redis-cache:6379}"
+      FRAPPE_REDIS_QUEUE: "${FRAPPE_REDIS_QUEUE:-redis://redis-queue:6379}"
 
+  # 5) Workers
   queue-short:
-    <<: *backend_defaults
+    <<: *custom-image
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
     platform: linux/amd64
-    command: bench worker --queue short,default
+    command: [ "bench", "worker", "--queue", "short,default" ]
+    volumes: *sites-volume
+    environment:
+      FRAPPE_REDIS_CACHE: "${FRAPPE_REDIS_CACHE:-redis://redis-cache:6379}"
+      FRAPPE_REDIS_QUEUE: "${FRAPPE_REDIS_QUEUE:-redis://redis-queue:6379}"
 
   queue-long:
-    <<: *backend_defaults
+    <<: *custom-image
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
     platform: linux/amd64
-    command: bench worker --queue long,default,short
+    command: [ "bench", "worker", "--queue", "long,default,short" ]
+    volumes: *sites-volume
+    environment:
+      FRAPPE_REDIS_CACHE: "${FRAPPE_REDIS_CACHE:-redis://redis-cache:6379}"
+      FRAPPE_REDIS_QUEUE: "${FRAPPE_REDIS_QUEUE:-redis://redis-queue:6379}"
 
   scheduler:
-    <<: *backend_defaults
+    <<: *custom-image
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
     platform: linux/amd64
-    command: bench schedule
+    command: [ "bench", "schedule" ]
+    volumes: *sites-volume
 
-# ERPNext requires local assets access (Frappe does not)
+  # 6) DB (MariaDB)
+  db:
+    image: "mariadb:10.6"
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost --password=$$MYSQL_ROOT_PASSWORD" ]
+      interval: 1s
+      retries: 20
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      # Gere UMA vez e reutilize: ${SERVICE_PASSWORD_DBROOT}
+      MYSQL_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"
+      MARIADB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"
+    volumes:
+      - "db-data:/var/lib/mysql"
+
+  # 7) Redis
+  redis-queue:
+    image: "redis:6.2-alpine"
+    volumes:
+      - "redis-queue-data:/data"
+
+  redis-cache:
+    image: "redis:6.2-alpine"
+
+  # 8) Criação do site (usa variáveis mágicas para senhas)
+  create-site:
+    <<: *custom-image
+    depends_on: {}
+    volumes: *sites-volume
+    entrypoint: [ "bash", "-c" ]
+    command:
+      - >
+        wait-for-it -t 120 db:3306;
+        wait-for-it -t 120 redis-cache:6379;
+        wait-for-it -t 120 redis-queue:6379;
+        export start=`date +%s`;
+        until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+              [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+              [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+        do
+          echo "Waiting for sites/common_site_config.json to be created";
+          sleep 5;
+          if (( `date +%s`-start > 120 )); then
+            echo "could not find sites/common_site_config.json with required keys";
+            exit 1;
+          fi
+        done;
+        echo "sites/common_site_config.json found";
+        bench new-site \
+          --mariadb-user-host-login-scope='%' \
+          --admin-password="$$ADMIN_PASSWORD" \
+          --db-root-username="root" \
+          --db-root-password="$$DB_ROOT_PASSWORD" \
+          --install-app erpnext \
+          --set-default frontend;
+    environment:
+      ADMIN_PASSWORD: "${SERVICE_PASSWORD_ERP-ADMIN:?}"   # required (gerado)
+      DB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DBROOT:?}"    # required (reuso)
+
 volumes:
+  db-data:
+  redis-queue-data:
   sites:
